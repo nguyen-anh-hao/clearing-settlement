@@ -1,0 +1,25 @@
+server:
+  port: ${SERVER_PORT:8083}
+
+spring:
+  application:
+    name: clearing-settlement
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/settlement}
+    username: ${SPRING_DATASOURCE_USERNAME:settlement}
+    password: ${SPRING_DATASOURCE_PASSWORD:settlement}
+    hikari:
+      # Do not fail startup when PostgreSQL is not yet reachable.
+      initialization-fail-timeout: -1
+
+logging:
+  level:
+    com.exchange.settlement: INFO
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
