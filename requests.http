@@ -1,0 +1,37 @@
+### Deposit Cash
+POST http://localhost:8083/deposit
+Content-Type: application/json
+
+{
+  "account_id": 1001,
+  "asset": "CASH",
+  "amount": "10000.00"
+}
+
+### Settle a Trade
+POST http://localhost:8083/settle
+Content-Type: application/json
+
+{
+  "trade_id": 10001,
+  "symbol": "AAPL",
+  "price": "150.00",
+  "quantity": "10",
+  "buyer_fee": "1.50",
+  "seller_fee": "1.50",
+  "maker_order_id": 1,
+  "taker_order_id": 2,
+  "maker_account_id": 1002,
+  "taker_account_id": 1001,
+  "buyer_account_id": 1001,
+  "seller_account_id": 1002
+}
+
+### Get Audit Ledger
+GET http://localhost:8083/ledger?account_id=1001
+
+### Get Portfolio
+GET http://localhost:8083/portfolio?account_id=1001
+
+### Get PnL
+GET http://localhost:8083/pnl?account_id=1001
