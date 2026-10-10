@@ -85,3 +85,4 @@ GET http://localhost:8083/pnl?account_id=1001
 | **v1.1.0** | **Asynchronous Batch Settlement** | Transition from synchronous HTTP `/settle` to Kafka Consumer group with batch commit. Process 5,000 trades/sec using JDBC batch insert (`rewriteBatchedStatements=true`). |
 | **v1.2.0** | **Account Partitioning & Lock-Free Accounting** | Partition ledger tables by date / account hash. Introduce optimistic concurrency control with conflict retry algorithms to eliminate row-level lock contention on hot omnibus accounts (e.g., fee accounts). |
 | **v2.0.0** | **LMAX Architecture / High-Speed CQRS** | Decouple write-side (Disruptor in-memory ledger with snapshotting) from read-side (read-only analytical replicas). Daily auto-reconciliation engine verifying $\Delta \text{Assets} = 0$ across all accounts in under 10 seconds. |
+
