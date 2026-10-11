@@ -8,6 +8,8 @@ import com.exchange.settlement.repository.TradeRepository;
 import com.exchange.settlement.service.InsufficientFundsException;
 import com.exchange.settlement.service.LedgerService;
 import com.exchange.settlement.service.SettlementService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +30,8 @@ import java.util.Map;
  */
 @RestController
 public class SettlementController {
+
+    private static final Logger log = LoggerFactory.getLogger(SettlementController.class);
 
     private final SettlementService settlement;
     private final LedgerService ledger;
@@ -62,12 +66,14 @@ public class SettlementController {
                 longField(body, "seller_account_id"));
         // Idempotency: a replayed /settle for the same trade_id is a no-op.
         if (!ledger.markTradeSettled(t.tradeId())) {
+            log.debug("duplicate settle ignored trade_id={}", t.tradeId());
             return Map.of("success", true);
         }
         List<LedgerEntry> entries = settlement.settle(t);
         tradeRepository.insert(t);
         repository.batchInsert(entries);
         balanceRepository.applyEntries(entries);
+        log.info("trade settled trade_id={} symbol={} qty={} price={}", t.tradeId(), t.symbol(), t.quantity(), t.price());
         return Map.of("success", true);
     }
 
@@ -79,6 +85,7 @@ public class SettlementController {
         List<LedgerEntry> entries = settlement.deposit(accountId, asset, amount);
         repository.batchInsert(entries);
         balanceRepository.applyEntries(entries);
+        log.info("deposit account_id={} asset={} amount={}", accountId, asset, amount);
         return Map.of("success", true);
     }
 
@@ -90,6 +97,7 @@ public class SettlementController {
         List<LedgerEntry> entries = settlement.withdraw(accountId, asset, amount);
         repository.batchInsert(entries);
         balanceRepository.applyEntries(entries);
+        log.info("withdraw account_id={} asset={} amount={}", accountId, asset, amount);
         return Map.of("success", true);
     }
 
@@ -160,6 +168,7 @@ public class SettlementController {
 
     @ExceptionHandler(InsufficientFundsException.class)
     public ResponseEntity<Map<String, Object>> handleInsufficient(InsufficientFundsException ex) {
+        log.warn("insufficient funds: {}", ex.getMessage());
         return ResponseEntity.ok(Map.of("success", false, "reason", ex.getMessage()));
     }
 }

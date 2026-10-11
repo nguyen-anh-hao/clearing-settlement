@@ -14,7 +14,7 @@ spring:
 
 logging:
   level:
-    com.exchange.settlement: INFO
+    com.exchange.settlement: ${LOG_LEVEL:INFO}
 
 management:
   tracing:
@@ -23,3 +23,8 @@ management:
   otlp:
     tracing:
       endpoint: ${OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
+    logging:
+      endpoint: ${OTLP_LOGS_ENDPOINT:http://localhost:4318/v1/logs}
+      transport: http
+      export:
+        enabled: true

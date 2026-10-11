@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Structured JSON console logging, with field names aligned with the Go/Node
+     services: timestamp, level, message, service_name, environment, trace_id, span_id.
+     The OTLP log appender (management.otlp.logging) still ships logs to the collector. -->
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                </timestamp>
+                <logLevel>
+                    <fieldName>level</fieldName>
+                </logLevel>
+                <message>
+                    <fieldName>message</fieldName>
+                </message>
+                <!-- Spring Boot sets the logback context name to spring.application.name. -->
+                <pattern>
+                    <fieldName>service_name</fieldName>
+                    <pattern>%contextName</pattern>
+                </pattern>
+                <!-- Micrometer tracing writes traceId/spanId into the MDC; re-expose
+                     them under snake_case names to match the other services. -->
+                <pattern>
+                    <fieldName>trace_id</fieldName>
+                    <pattern>%X{traceId}</pattern>
+                </pattern>
+                <pattern>
+                    <fieldName>span_id</fieldName>
+                    <pattern>%X{spanId}</pattern>
+                </pattern>
+                <customFields>{"environment":"${APP_ENV:-dev}"}</customFields>
+            </providers>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>
