@@ -12,6 +12,12 @@ spring:
       # Do not fail startup when PostgreSQL is not yet reachable.
       initialization-fail-timeout: -1
 
+app:
+  accounting:
+    outbox:
+      enabled: ${ACCOUNTING_OUTBOX_ENABLED:true}
+    schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
+
 logging:
   level:
     com.exchange.settlement: ${LOG_LEVEL:INFO}

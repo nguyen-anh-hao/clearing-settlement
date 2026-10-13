@@ -14,7 +14,8 @@ $$\sum \text{Debits} = \sum \text{Credits}$$
 ## 2. Boundaries & I/O
 - **Ingress:** Consumes settled trade batches (`POST /settle`), deposits (`POST /deposit`), and withdrawals (`POST /withdraw`).
 - **Database:** PostgreSQL (`settlement` schema) for immutable append-only ledger entries and account balance tables.
-- **Contract Reference:** `trading-contracts/proto/ledger/settlement.proto`.
+- **Egress (Transactional Outbox):** Every settlement operation also writes accounting events to the `outbox` table (same DB transaction). Debezium CDC tails the table and relays the events to Kafka (`accounting.*` topics) for `accounting-tax-service`.
+- **Contract Reference:** `trading-contracts/proto/ledger/settlement.proto` (HTTP) and `trading-contracts/avro/accounting/*.avsc` (Kafka events).
 
 ---
 

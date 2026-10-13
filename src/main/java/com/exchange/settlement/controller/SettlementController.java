@@ -2,12 +2,9 @@ package com.exchange.settlement.controller;
 
 import com.exchange.settlement.domain.LedgerEntry;
 import com.exchange.settlement.domain.Trade;
-import com.exchange.settlement.repository.BalanceRepository;
-import com.exchange.settlement.repository.LedgerRepository;
-import com.exchange.settlement.repository.TradeRepository;
 import com.exchange.settlement.service.InsufficientFundsException;
 import com.exchange.settlement.service.LedgerService;
-import com.exchange.settlement.service.SettlementService;
+import com.exchange.settlement.service.SettlementTransactionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -33,20 +30,12 @@ public class SettlementController {
 
     private static final Logger log = LoggerFactory.getLogger(SettlementController.class);
 
-    private final SettlementService settlement;
     private final LedgerService ledger;
-    private final LedgerRepository repository;
-    private final TradeRepository tradeRepository;
-    private final BalanceRepository balanceRepository;
+    private final SettlementTransactionService settlementTx;
 
-    public SettlementController(SettlementService settlement,
-                                LedgerService ledger, LedgerRepository repository,
-                                TradeRepository tradeRepository, BalanceRepository balanceRepository) {
-        this.settlement = settlement;
+    public SettlementController(LedgerService ledger, SettlementTransactionService settlementTx) {
         this.ledger = ledger;
-        this.repository = repository;
-        this.tradeRepository = tradeRepository;
-        this.balanceRepository = balanceRepository;
+        this.settlementTx = settlementTx;
     }
 
     @PostMapping("/settle")
@@ -69,10 +58,7 @@ public class SettlementController {
             log.debug("duplicate settle ignored trade_id={}", t.tradeId());
             return Map.of("success", true);
         }
-        List<LedgerEntry> entries = settlement.settle(t);
-        tradeRepository.insert(t);
-        repository.batchInsert(entries);
-        balanceRepository.applyEntries(entries);
+        settlementTx.settle(t);
         log.info("trade settled trade_id={} symbol={} qty={} price={}", t.tradeId(), t.symbol(), t.quantity(), t.price());
         return Map.of("success", true);
     }
@@ -82,9 +68,7 @@ public class SettlementController {
         long accountId = ((Number) body.get("account_id")).longValue();
         String asset = (String) body.get("asset");
         BigDecimal amount = new BigDecimal((String) body.get("amount"));
-        List<LedgerEntry> entries = settlement.deposit(accountId, asset, amount);
-        repository.batchInsert(entries);
-        balanceRepository.applyEntries(entries);
+        settlementTx.deposit(accountId, asset, amount);
         log.info("deposit account_id={} asset={} amount={}", accountId, asset, amount);
         return Map.of("success", true);
     }
@@ -94,9 +78,7 @@ public class SettlementController {
         long accountId = ((Number) body.get("account_id")).longValue();
         String asset = (String) body.get("asset");
         BigDecimal amount = new BigDecimal((String) body.get("amount"));
-        List<LedgerEntry> entries = settlement.withdraw(accountId, asset, amount);
-        repository.batchInsert(entries);
-        balanceRepository.applyEntries(entries);
+        settlementTx.withdraw(accountId, asset, amount);
         log.info("withdraw account_id={} asset={} amount={}", accountId, asset, amount);
         return Map.of("success", true);
     }
