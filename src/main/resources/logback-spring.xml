@@ -16,20 +16,16 @@
                 <message>
                     <fieldName>message</fieldName>
                 </message>
-                <!-- Spring Boot sets the logback context name to spring.application.name. -->
+                <!-- Spring Boot sets the logback context name to spring.application.name.
+                     NOTE: the <pattern> provider (LoggingEventPatternJsonProvider) has no
+                     <fieldName>; its body MUST be a valid JSON object, with logback
+                     pattern expressions embedded inside the JSON string values. -->
                 <pattern>
-                    <fieldName>service_name</fieldName>
-                    <pattern>%contextName</pattern>
-                </pattern>
-                <!-- Micrometer tracing writes traceId/spanId into the MDC; re-expose
-                     them under snake_case names to match the other services. -->
-                <pattern>
-                    <fieldName>trace_id</fieldName>
-                    <pattern>%X{traceId}</pattern>
-                </pattern>
-                <pattern>
-                    <fieldName>span_id</fieldName>
-                    <pattern>%X{spanId}</pattern>
+                    {
+                    "service_name": "%contextName",
+                    "trace_id": "%X{traceId}",
+                    "span_id": "%X{spanId}"
+                    }
                 </pattern>
                 <customFields>{"environment":"${APP_ENV:-dev}"}</customFields>
             </providers>

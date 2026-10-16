@@ -1,0 +1,153 @@
+# =============================================================================
+# Standalone local development stack for `clearing-settlement`.
+#
+# Brings up ONLY what this service needs to exercise the full outbox path
+# (API -> outbox table -> Debezium -> Kafka topic -> Kafka UI) without needing
+# any other repository or service source:
+#
+#   postgres        system-of-record DB, schema auto-applied from ../postgres/init
+#   redpanda        Kafka API (single-node, dev only)
+#   schema-registry Avro schema store (backed by the redpanda broker)
+#   connect         Debezium Kafka Connect, tails the outbox table
+#   kafka-ui        message browser (Avro decoded via Schema Registry)
+#
+# The Spring Boot app runs on the HOST and uses the defaults already present in
+# src/main/resources/application.yml (localhost:5432 and http://localhost:8081),
+# so no environment variables are required:
+#
+#   docker compose -f deployments/docker/docker-compose.dev.yml up -d --build
+#   mvn spring-boot:run
+#
+# NOTE: Connect's REST API is published on host port 18083 (not 8083) so that it
+# does not clash with the service's own HTTP port.
+# =============================================================================
+name: clearing-settlement-dev
+
+services:
+  postgres:
+    image: postgres:16
+    # wal_level=logical + a replication slot are required by Debezium CDC.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    environment:
+      POSTGRES_DB: settlement
+      POSTGRES_USER: settlement
+      POSTGRES_PASSWORD: settlement
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U settlement -d settlement"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.18
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      # Internal listeners use redpanda:29092 (containers), external use localhost:9092 (host).
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://redpanda:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+    ports:
+      - "8081:8081"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  # Debezium Kafka Connect. Built from ./connect so the Postgres connector +
+  # Outbox Event Router SMT + AvroConverter are available.
+  connect:
+    build:
+      context: ./connect
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: redpanda:29092
+      CONNECT_GROUP_ID: "1"
+      CONNECT_CONFIG_STORAGE_TOPIC: connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      # Relay the Confluent-framed Avro outbox payload verbatim to Kafka.
+      CONNECT_VALUE_CONVERTER: io.debezium.converters.BinaryDataConverter
+      CONNECT_VALUE_CONVERTER_DELEGATE_CONVERTER_TYPE: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER_DELEGATE_CONVERTER_TYPE_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    ports:
+      - "18083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+      schema-registry:
+        condition: service_started
+
+  # One-shot job: registers the outbox connector once Connect's REST API is up.
+  connect-init:
+    image: curlimages/curl:8.6.0
+    depends_on:
+      connect:
+        condition: service_started
+    volumes:
+      - ./connect/outbox-connector.json:/connector.json:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until curl -fsS http://connect:8083/connectors >/dev/null 2>&1; do
+          echo "waiting for connect..."; sleep 3;
+        done;
+        curl -s -X POST -H "Content-Type: application/json"
+        --data @/connector.json http://connect:8083/connectors || true;
+        echo "outbox connector registered"
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: redpanda:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+    ports:
+      - "8090:8080"
+    depends_on:
+      redpanda:
+        condition: service_started
+      schema-registry:
+        condition: service_started
+
+volumes:
+  pgdata:
+

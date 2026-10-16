@@ -1,10 +1,16 @@
 package com.exchange.settlement.controller;
 
+import com.exchange.settlement.controller.dto.DepositRequest;
+import com.exchange.settlement.controller.dto.SettleRequest;
+import com.exchange.settlement.controller.dto.WithdrawRequest;
 import com.exchange.settlement.domain.LedgerEntry;
 import com.exchange.settlement.domain.Trade;
 import com.exchange.settlement.service.InsufficientFundsException;
 import com.exchange.settlement.service.LedgerService;
 import com.exchange.settlement.service.SettlementTransactionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -25,6 +31,8 @@ import java.util.Map;
  * HTTP API for clearing & settlement. Monetary values are serialized as plain
  * strings to preserve fixed-point precision across languages.
  */
+@Tag(name = "Clearing & Settlement",
+        description = "Double-entry general ledger and trade settlement. Monetary values are plain strings.")
 @RestController
 public class SettlementController {
 
@@ -38,21 +46,24 @@ public class SettlementController {
         this.settlementTx = settlementTx;
     }
 
+    @Operation(summary = "Settle a matched trade",
+            description = "Writes balanced double-entry ledger rows and, when the transactional outbox is "
+                    + "enabled, an accounting event. Replaying the same trade_id is an idempotent no-op.")
     @PostMapping("/settle")
-    public Map<String, Object> settle(@RequestBody Map<String, Object> body) {
+    public Map<String, Object> settle(@RequestBody SettleRequest body) {
         Trade t = new Trade(
-                longField(body, "trade_id"),
-                (String) body.get("symbol"),
-                new BigDecimal((String) body.get("price")),
-                new BigDecimal((String) body.get("quantity")),
-                new BigDecimal((String) body.getOrDefault("buyer_fee", "0")),
-                new BigDecimal((String) body.getOrDefault("seller_fee", "0")),
-                longField(body, "maker_order_id"),
-                longField(body, "taker_order_id"),
-                longField(body, "maker_account_id"),
-                longField(body, "taker_account_id"),
-                longField(body, "buyer_account_id"),
-                longField(body, "seller_account_id"));
+                body.tradeId(),
+                body.symbol(),
+                new BigDecimal(body.price()),
+                new BigDecimal(body.quantity()),
+                new BigDecimal(body.buyerFee() == null ? "0" : body.buyerFee()),
+                new BigDecimal(body.sellerFee() == null ? "0" : body.sellerFee()),
+                body.makerOrderId(),
+                body.takerOrderId(),
+                body.makerAccountId(),
+                body.takerAccountId(),
+                body.buyerAccountId(),
+                body.sellerAccountId());
         // Idempotency: a replayed /settle for the same trade_id is a no-op.
         if (!ledger.markTradeSettled(t.tradeId())) {
             log.debug("duplicate settle ignored trade_id={}", t.tradeId());
@@ -63,33 +74,39 @@ public class SettlementController {
         return Map.of("success", true);
     }
 
+    @Operation(summary = "Apply a deposit",
+            description = "Credits the account with balanced double-entry rows and writes the accounting outbox events.")
     @PostMapping("/deposit")
-    public Map<String, Object> deposit(@RequestBody Map<String, Object> body) {
-        long accountId = ((Number) body.get("account_id")).longValue();
-        String asset = (String) body.get("asset");
-        BigDecimal amount = new BigDecimal((String) body.get("amount"));
-        settlementTx.deposit(accountId, asset, amount);
-        log.info("deposit account_id={} asset={} amount={}", accountId, asset, amount);
+    public Map<String, Object> deposit(@RequestBody DepositRequest body) {
+        BigDecimal amount = new BigDecimal(body.amount());
+        settlementTx.deposit(body.accountId(), body.asset(), amount);
+        log.info("deposit account_id={} asset={} amount={}", body.accountId(), body.asset(), amount);
         return Map.of("success", true);
     }
 
+    @Operation(summary = "Apply a withdrawal",
+            description = "Debits the account. Responds with success=false when funds are insufficient.")
     @PostMapping("/withdraw")
-    public Map<String, Object> withdraw(@RequestBody Map<String, Object> body) {
-        long accountId = ((Number) body.get("account_id")).longValue();
-        String asset = (String) body.get("asset");
-        BigDecimal amount = new BigDecimal((String) body.get("amount"));
-        settlementTx.withdraw(accountId, asset, amount);
-        log.info("withdraw account_id={} asset={} amount={}", accountId, asset, amount);
+    public Map<String, Object> withdraw(@RequestBody WithdrawRequest body) {
+        BigDecimal amount = new BigDecimal(body.amount());
+        settlementTx.withdraw(body.accountId(), body.asset(), amount);
+        log.info("withdraw account_id={} asset={} amount={}", body.accountId(), body.asset(), amount);
         return Map.of("success", true);
     }
 
+    @Operation(summary = "Query the immutable ledger audit trail for an account")
     @GetMapping("/ledger")
-    public List<Map<String, Object>> ledger(@RequestParam("account_id") long accountId) {
+    public List<Map<String, Object>> ledger(
+            @Parameter(description = "Account id", example = "1001")
+            @RequestParam("account_id") long accountId) {
         return ledger.ledger(accountId).stream().map(this::toMap).toList();
     }
 
+    @Operation(summary = "Current stock positions with average cost and unrealized PnL")
     @GetMapping("/portfolio")
-    public List<Map<String, Object>> portfolio(@RequestParam("account_id") long accountId) {
+    public List<Map<String, Object>> portfolio(
+            @Parameter(description = "Account id", example = "1001")
+            @RequestParam("account_id") long accountId) {
         List<Map<String, Object>> out = new ArrayList<>();
         ledger.balances(accountId).forEach((asset, amount) -> {
             if (!asset.startsWith("STOCK:")) {
@@ -112,8 +129,11 @@ public class SettlementController {
         return out;
     }
 
+    @Operation(summary = "Realized and unrealized PnL for an account")
     @GetMapping("/pnl")
-    public Map<String, Object> pnl(@RequestParam("account_id") long accountId) {
+    public Map<String, Object> pnl(
+            @Parameter(description = "Account id", example = "1001")
+            @RequestParam("account_id") long accountId) {
         BigDecimal realized = ledger.realizedPnl(accountId);
         BigDecimal unrealized = BigDecimal.ZERO;
         for (Map.Entry<String, BigDecimal> e : ledger.balances(accountId).entrySet()) {
@@ -129,11 +149,6 @@ public class SettlementController {
         m.put("realized_pnl", realized.toPlainString());
         m.put("unrealized_pnl", unrealized.toPlainString());
         return m;
-    }
-
-    private static long longField(Map<String, Object> body, String key) {
-        Object v = body.get(key);
-        return v == null ? 0L : ((Number) v).longValue();
     }
 
     private Map<String, Object> toMap(LedgerEntry e) {

@@ -1,6 +1,10 @@
 package com.exchange.settlement.service;
 
 import com.exchange.settlement.domain.LedgerEntry;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -21,10 +25,38 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class LedgerService {
 
+    private static final Logger log = LoggerFactory.getLogger(LedgerService.class);
+
+    private final JdbcTemplate jdbc;
     private final Map<Long, Map<String, BigDecimal>> balances = new ConcurrentHashMap<>();
     private final List<LedgerEntry> entries = new CopyOnWriteArrayList<>();
     private final AtomicLong seq = new AtomicLong(1);
     private final Set<Long> settledTrades = ConcurrentHashMap.newKeySet();
+
+    public LedgerService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    /**
+     * Seeds the entry-id sequence from the persisted journal so that restarting
+     * the service against a non-empty database does not collide with the
+     * {@code ledger_entries} primary key. The service is designed to boot even
+     * when the database is unreachable, so a failure here is logged, not fatal.
+     */
+    @PostConstruct
+    void seedEntryIdSequence() {
+        try {
+            Long max = jdbc.queryForObject(
+                    "SELECT COALESCE(MAX(entry_id), 0) FROM ledger_entries", Long.class);
+            if (max != null && max > 0) {
+                seq.set(max + 1);
+                log.info("ledger entry id sequence seeded at {}", max + 1);
+            }
+        } catch (Exception ex) {
+            log.warn("could not seed ledger entry id sequence from database, starting at 1: {}",
+                    ex.getMessage());
+        }
+    }
 
     // Portfolio / PnL state.
     private final Map<Long, Map<String, BigDecimal>> avgCosts = new ConcurrentHashMap<>();
