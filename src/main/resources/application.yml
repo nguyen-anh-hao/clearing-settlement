@@ -23,6 +23,13 @@ logging:
     com.exchange.settlement: ${LOG_LEVEL:INFO}
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: clearing-settlement
   tracing:
     sampling:
       probability: 1.0
