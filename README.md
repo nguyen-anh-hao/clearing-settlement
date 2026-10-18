@@ -1,89 +1,41 @@
-# Clearing & Settlement (`clearing-settlement`)
+# clearing-settlement
 
-> **Double-Entry General Ledger & Trade Settlement Service** built with Java 21 & Spring Boot 3.
+## Purpose
 
----
+The financial source of truth: it books every cash and asset movement as a balanced double-entry journal and derives balances, positions and profit and loss from that journal. It owns settlement, deposits and withdrawals, and it publishes accounting events. It does not match orders, hold buying power or decide fees.
 
-## 1. Primary Responsibility
-This service is the financial "Source of Truth" for money and asset custody. It performs **strict double-entry bookkeeping**: every trade fill produces balanced debit and credit ledger rows. It guarantees idempotency (replaying the same `trade_id` is a safe no-op) and prevents unbacked asset generation.
+## Domain knowledge
 
-$$\sum \text{Debits} = \sum \text{Credits}$$
+Every operation produces equal debits and credits, including deposits and withdrawals which post against the exchange treasury account zero. A trade creates four user legs, buyer cash out and stock in plus seller stock out and cash in, and a fee leg to the treasury or a rebate leg when the combined fee is negative. A trade identifier is the idempotency key, and the trades table primary key prevents a second booking even after a restart.
 
----
+Balances are never updated in place; the journal is append-only and balances are a derived materialized view, with entry identifiers seeded from the persisted maximum on restart. Cost basis uses a moving average, a sell realizes profit against that basis, and the last traded price drives unrealized profit. Amounts use exact decimals, so no binary floating point enters the ledger.
 
-## 2. Boundaries & I/O
-- **Ingress:** Consumes settled trade batches (`POST /settle`), deposits (`POST /deposit`), and withdrawals (`POST /withdraw`).
-- **Database:** PostgreSQL (`settlement` schema) for immutable append-only ledger entries and account balance tables.
-- **Egress (Transactional Outbox):** Every settlement operation also writes accounting events to the `outbox` table (same DB transaction). Debezium CDC tails the table and relays the events to Kafka (`accounting.*` topics) for `accounting-tax-service`.
-- **Contract Reference:** `trading-contracts/proto/ledger/settlement.proto` (HTTP) and `trading-contracts/avro/accounting/*.avsc` (Kafka events).
+Settlement is synchronous over HTTP today, which means the caller waits for the database transaction to commit. The accounting outbox is written in that same transaction, and Debezium relays it to Kafka, so no event exists without its ledger rows. A failed transaction leaves neither rows nor events.
 
----
+## Decisions and consequences
 
-## 3. Quick Start (Run in 2 minutes)
+**Double-entry bookkeeping.** Every movement has a balancing leg, which makes the journal auditable and prevents money creation. The cost is roughly twice the rows and a treasury account that must be modeled explicitly.
 
-### Prerequisites
-- JDK 21+
-- Maven 3.9+
+**Append-only ledger with derived balances.** History is immutable and balances can always be rebuilt. The trade-off is that reads need aggregation or maintained views rather than a single row update.
 
-```bash
-# 1. Start local PostgreSQL
-docker run -d --name settlement-db -p 5432:5432 \
-  -e POSTGRES_DB=settlement -e POSTGRES_USER=settlement -e POSTGRES_PASSWORD=settlement \
-  postgres:15-alpine
+**Transactional outbox with CDC.** Ledger rows, trades, balances and accounting events commit together, eliminating the dual-write failure mode. The cost is an outbox table, a Debezium connector and schema registry availability.
 
-# 2. Build and run Spring Boot
-mvn spring-boot:run
-```
+**Synchronous settlement endpoint.** The current contract is simple to reason about and easy to retry because trade identifiers are idempotent. Throughput is bounded by request round trips and database commits, which is why batch settlement is planned.
 
----
+**Moving-average cost basis.** Realized profit is stable and cheap to compute, but it is not tax-lot accounting and cannot answer jurisdiction-specific lot questions.
 
-## 4. Executable Documentation (`requests.http`)
+## Operations and known limits
 
-```http
-### Apply Deposit (Credit Cash)
-POST http://localhost:8083/deposit
-Content-Type: application/json
+PostgreSQL is the intended system of record, and the service can still boot when the database is unreachable, but it cannot settle anything in that state. The outbox path additionally needs Kafka and a schema registry, and it can be disabled for a database-only run. On restart, the entry sequence is seeded from the journal, and a database outage is logged rather than fatal.
 
-{
-  "account_id": 1001,
-  "asset": "CASH",
-  "amount": "10000.00"
-}
+Debezium must not use the created-at column as the event timestamp, because the column is a zoned timestamp rather than the required 64-bit integer and the connector task fails. The Connect REST port is published as 18083 to avoid colliding with the settlement service on 8083. Schema registry subjects use the record's fully qualified name rather than topic-value naming, so consumers must resolve schemas by record name.
 
-### Settle Executed Trade (Double-entry transaction)
-POST http://localhost:8083/settle
-Content-Type: application/json
+The ledger is append-only, so corrections are compensating entries, never updates or deletes. Trade settlement is synchronous, and the settlement endpoint is exposed directly on port 8083 rather than through the edge. The standalone development stack in the deployments directory provides PostgreSQL, Redpanda, schema registry, Connect and Kafka UI without any other platform service.
 
-{
-  "trade_id": 5001,
-  "symbol": "AAPL",
-  "price": "150.00",
-  "quantity": "10",
-  "buyer_fee": "1.50",
-  "seller_fee": "1.50",
-  "maker_order_id": 1,
-  "taker_order_id": 2,
-  "maker_account_id": 1002,
-  "taker_account_id": 1001,
-  "buyer_account_id": 1001,
-  "seller_account_id": 1002
-}
+## Future direction
 
-### Query Account Ledger (Audit Trail)
-GET http://localhost:8083/ledger?account_id=1001
+Business: settlement cycles, corporate actions and tax-lot reporting are outside today's scope and would need explicit product decisions.
 
-### Query Realized & Unrealized PnL
-GET http://localhost:8083/pnl?account_id=1001
-```
+Technical: asynchronous batch settlement from Kafka, ledger partitioning by date or account hash, and optimistic concurrency for hot treasury accounts. A read-write split with a rebuildable analytical replica is the long-term shape.
 
----
-
-## 5. Engineering Roadmap (Database Throughput & Correctness)
-
-| Version | Phase | Optimization Target & Database Problem |
-| :--- | :--- | :--- |
-| **v1.0.0** *(Current)* | **Baseline Ledger** | Spring Data JDBC / JPA with PostgreSQL transaction isolation. HTTP/JSON endpoints. |
-| **v1.1.0** | **Asynchronous Batch Settlement** | Transition from synchronous HTTP `/settle` to Kafka Consumer group with batch commit. Process 5,000 trades/sec using JDBC batch insert (`rewriteBatchedStatements=true`). |
-| **v1.2.0** | **Account Partitioning & Lock-Free Accounting** | Partition ledger tables by date / account hash. Introduce optimistic concurrency control with conflict retry algorithms to eliminate row-level lock contention on hot omnibus accounts (e.g., fee accounts). |
-| **v2.0.0** | **LMAX Architecture / High-Speed CQRS** | Decouple write-side (Disruptor in-memory ledger with snapshotting) from read-side (read-only analytical replicas). Daily auto-reconciliation engine verifying $\Delta \text{Assets} = 0$ across all accounts in under 10 seconds. |
-
+Boundaries: position and profit reporting may move to a dedicated portfolio service, leaving this service as the journal and settlement authority.

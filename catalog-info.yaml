@@ -1,0 +1,17 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: clearing-settlement
+  description: Double-entry ledger, settlement, deposits, withdrawals and portfolio PnL.
+  annotations:
+    github.com/project-slug: nguyen-anh-hao/clearing-settlement
+  tags: [java, ledger, settlement]
+spec:
+  type: service
+  lifecycle: experimental
+  owner: nguyen-anh-hao
+  system: trading-exchange
+  dependsOn:
+    - resource:postgres-settlement
+    - resource:kafka
+    - resource:schema-registry
