@@ -1,6 +1,8 @@
 package com.exchange.settlement.service;
 
 import com.exchange.settlement.domain.LedgerEntry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,13 +30,15 @@ public class LedgerService {
     private static final Logger log = LoggerFactory.getLogger(LedgerService.class);
 
     private final JdbcTemplate jdbc;
+    private final Counter entriesTotal;
     private final Map<Long, Map<String, BigDecimal>> balances = new ConcurrentHashMap<>();
     private final List<LedgerEntry> entries = new CopyOnWriteArrayList<>();
     private final AtomicLong seq = new AtomicLong(1);
     private final Set<Long> settledTrades = ConcurrentHashMap.newKeySet();
 
-    public LedgerService(JdbcTemplate jdbc) {
+    public LedgerService(JdbcTemplate jdbc, MeterRegistry meters) {
         this.jdbc = jdbc;
+        this.entriesTotal = meters.counter("trading_ledger_entries_total");
     }
 
     /**
@@ -70,6 +74,7 @@ public class LedgerService {
         LedgerEntry e = new LedgerEntry(seq.getAndIncrement(), accountId, asset,
                 debit, credit, reference, reason, System.nanoTime());
         entries.add(e);
+        entriesTotal.increment();
         return e;
     }
 

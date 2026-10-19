@@ -6,6 +6,8 @@ import com.exchange.settlement.outbox.AccountingEventPublisher;
 import com.exchange.settlement.repository.BalanceRepository;
 import com.exchange.settlement.repository.LedgerRepository;
 import com.exchange.settlement.repository.TradeRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,27 +28,38 @@ public class SettlementTransactionService {
     private final LedgerRepository ledgerRepository;
     private final BalanceRepository balanceRepository;
     private final AccountingEventPublisher accountingPublisher;
+    private final Counter settled;
+    private final Counter failed;
 
     public SettlementTransactionService(SettlementService settlement,
                                         TradeRepository tradeRepository,
                                         LedgerRepository ledgerRepository,
                                         BalanceRepository balanceRepository,
-                                        AccountingEventPublisher accountingPublisher) {
+                                        AccountingEventPublisher accountingPublisher,
+                                        MeterRegistry meters) {
         this.settlement = settlement;
         this.tradeRepository = tradeRepository;
         this.ledgerRepository = ledgerRepository;
         this.balanceRepository = balanceRepository;
         this.accountingPublisher = accountingPublisher;
+        this.settled = meters.counter("trading_settlements_total", "status", "SETTLED");
+        this.failed = meters.counter("trading_settlements_total", "status", "FAILED");
     }
 
     @Transactional
     public void settle(Trade t) {
-        List<LedgerEntry> entries = settlement.settle(t);
-        tradeRepository.insert(t);
-        ledgerRepository.batchInsert(entries);
-        balanceRepository.applyEntries(entries);
-        accountingPublisher.publishTradeSettled(t);
-        accountingPublisher.publishLedgerEntries(entries);
+        try {
+            List<LedgerEntry> entries = settlement.settle(t);
+            tradeRepository.insert(t);
+            ledgerRepository.batchInsert(entries);
+            balanceRepository.applyEntries(entries);
+            accountingPublisher.publishTradeSettled(t);
+            accountingPublisher.publishLedgerEntries(entries);
+            settled.increment();
+        } catch (RuntimeException ex) {
+            failed.increment();
+            throw ex;
+        }
     }
 
     @Transactional

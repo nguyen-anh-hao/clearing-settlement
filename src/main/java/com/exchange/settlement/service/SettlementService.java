@@ -2,6 +2,8 @@ package com.exchange.settlement.service;
 
 import com.exchange.settlement.domain.LedgerEntry;
 import com.exchange.settlement.domain.Trade;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -23,43 +25,52 @@ public class SettlementService {
     private static final long SYSTEM_ACCOUNT = 0L;
 
     private final LedgerService ledger;
+    private final Timer timer;
+    private final MeterRegistry meters;
 
-    public SettlementService(LedgerService ledger) {
+    public SettlementService(LedgerService ledger, MeterRegistry meters) {
         this.ledger = ledger;
+        this.meters = meters;
+        this.timer = meters.timer("trading_settlement_duration_seconds");
     }
 
     public List<LedgerEntry> settle(Trade t) {
-        BigDecimal notional = t.price().multiply(t.quantity());
-        BigDecimal buyerCost = notional.add(t.buyerFee());
-        BigDecimal sellerProceeds = notional.subtract(t.sellerFee());
-        BigDecimal feeRevenue = t.buyerFee().add(t.sellerFee());
+        Timer.Sample sample = Timer.start(meters);
+        try {
+            BigDecimal notional = t.price().multiply(t.quantity());
+            BigDecimal buyerCost = notional.add(t.buyerFee());
+            BigDecimal sellerProceeds = notional.subtract(t.sellerFee());
+            BigDecimal feeRevenue = t.buyerFee().add(t.sellerFee());
 
-        List<LedgerEntry> out = new ArrayList<>(6);
-        String stock = "STOCK:" + t.symbol();
-        String ref = "trade:" + t.tradeId();
+            List<LedgerEntry> out = new ArrayList<>(6);
+            String stock = "STOCK:" + t.symbol();
+            String ref = "trade:" + t.tradeId();
 
-        // Update cost basis / realized PnL BEFORE the ledger entries change balances.
-        ledger.applyBuy(t.buyerAccountId(), t.symbol(), t.quantity(), t.price());
-        ledger.applySell(t.sellerAccountId(), t.symbol(), t.quantity(), t.price());
-        ledger.setLastPrice(t.symbol(), t.price());
+            // Update cost basis / realized PnL BEFORE the ledger entries change balances.
+            ledger.applyBuy(t.buyerAccountId(), t.symbol(), t.quantity(), t.price());
+            ledger.applySell(t.sellerAccountId(), t.symbol(), t.quantity(), t.price());
+            ledger.setLastPrice(t.symbol(), t.price());
 
-        // Buyer: debit cash (notional + fee), credit stock.
-        out.add(ledger.record(t.buyerAccountId(), "CASH", buyerCost, BigDecimal.ZERO, ref, "BUY"));
-        out.add(ledger.record(t.buyerAccountId(), stock, BigDecimal.ZERO, t.quantity(), ref, "BUY"));
+            // Buyer: debit cash (notional + fee), credit stock.
+            out.add(ledger.record(t.buyerAccountId(), "CASH", buyerCost, BigDecimal.ZERO, ref, "BUY"));
+            out.add(ledger.record(t.buyerAccountId(), stock, BigDecimal.ZERO, t.quantity(), ref, "BUY"));
 
-        // Seller: credit cash (notional - fee), debit stock.
-        out.add(ledger.record(t.sellerAccountId(), "CASH", BigDecimal.ZERO, sellerProceeds, ref, "SELL"));
-        out.add(ledger.record(t.sellerAccountId(), stock, t.quantity(), BigDecimal.ZERO, ref, "SELL"));
+            // Seller: credit cash (notional - fee), debit stock.
+            out.add(ledger.record(t.sellerAccountId(), "CASH", BigDecimal.ZERO, sellerProceeds, ref, "SELL"));
+            out.add(ledger.record(t.sellerAccountId(), stock, t.quantity(), BigDecimal.ZERO, ref, "SELL"));
 
-        // Exchange fee revenue (or rebate payout) so the journal stays balanced:
-        // total CASH debits == total CASH credits across all accounts.
-        if (feeRevenue.signum() > 0) {
-            out.add(ledger.record(SYSTEM_ACCOUNT, "CASH", BigDecimal.ZERO, feeRevenue, ref, "FEE"));
-        } else if (feeRevenue.signum() < 0) {
-            out.add(ledger.record(SYSTEM_ACCOUNT, "CASH", feeRevenue.negate(), BigDecimal.ZERO, ref, "FEE_REBATE"));
+            // Exchange fee revenue (or rebate payout) so the journal stays balanced:
+            // total CASH debits == total CASH credits across all accounts.
+            if (feeRevenue.signum() > 0) {
+                out.add(ledger.record(SYSTEM_ACCOUNT, "CASH", BigDecimal.ZERO, feeRevenue, ref, "FEE"));
+            } else if (feeRevenue.signum() < 0) {
+                out.add(ledger.record(SYSTEM_ACCOUNT, "CASH", feeRevenue.negate(), BigDecimal.ZERO, ref, "FEE_REBATE"));
+            }
+
+            return out;
+        } finally {
+            sample.stop(timer);
         }
-
-        return out;
     }
 
     public List<LedgerEntry> deposit(long accountId, String asset, BigDecimal amount) {
